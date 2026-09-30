@@ -36,7 +36,7 @@ export const PAIN_POINTS = [
 export const CSV_FIELDS = [
   'id', 'company', 'contactName', 'email', 'phone', 'trade', 'city', 'source',
   'status', 'lastContactDate', 'followUpDate', 'painPoints', 'interviewNotes', 'isSample',
-  'interviewDate',
+  'interviewDate', 'sharesList', 'pilotInterest',
 ];
 
 // Business days between first contact and the single follow-up, and between the follow-up and closing.
@@ -62,7 +62,7 @@ export function emptyProspect() {
   return {
     id: '', company: '', contactName: '', email: '', phone: '', trade: 'HVAC', city: '',
     source: '', status: 'queued', lastContactDate: '', followUpDate: '', painPoints: [],
-    interviewNotes: '', isSample: false, interviewDate: '',
+    interviewNotes: '', isSample: false, interviewDate: '', sharesList: '', pilotInterest: '',
   };
 }
 
@@ -73,7 +73,7 @@ export function sanitizeProspect(input) {
   for (const key of Object.keys(base)) {
     if (input && input[key] !== undefined && input[key] !== null) p[key] = input[key];
   }
-  for (const key of ['id', 'company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewNotes', 'interviewDate']) {
+  for (const key of ['id', 'company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewNotes', 'interviewDate', 'sharesList', 'pilotInterest']) {
     p[key] = String(p[key]).trim();
   }
   p.email = normalizeEmail(p.email);
@@ -82,6 +82,8 @@ export function sanitizeProspect(input) {
   p.lastContactDate = toIsoDate(p.lastContactDate);
   p.followUpDate = toIsoDate(p.followUpDate);
   p.interviewDate = toIsoDate(p.interviewDate);
+  p.sharesList = normalizeSignal(p.sharesList);
+  p.pilotInterest = normalizeSignal(p.pilotInterest);
   // v0.1 had no interview date, so scheduled interviews kept their date in followUpDate.
   // Copy it (never move it) so those records show up as upcoming interviews.
   if (p.status === 'interview_scheduled' && !p.interviewDate && p.followUpDate) p.interviewDate = p.followUpDate;
@@ -433,6 +435,8 @@ const HEADER_ALIASES = {
   interviewNotes: ['interviewnotes', 'interview notes', 'notes'],
   isSample: ['issample', 'is sample', 'sample'],
   interviewDate: ['interviewdate', 'interview date', 'interview_date'],
+  sharesList: ['shareslist', 'shares list', 'would share list', 'list access'],
+  pilotInterest: ['pilotinterest', 'pilot interest', 'pilot', 'would pay'],
   id: ['id'],
 };
 
@@ -471,4 +475,115 @@ export function importCsv(text, existing = []) {
     added.push(p);
   });
   return { added, skipped, errors };
+}
+
+// ---------- validation scorecard ----------
+
+export const SIGNALS = [
+  { id: '', label: 'Not asked' },
+  { id: 'yes', label: 'Yes' },
+  { id: 'maybe', label: 'Maybe' },
+  { id: 'no', label: 'No' },
+];
+
+export function normalizeSignal(value) {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (['yes', 'y', 'true', '1'].includes(v)) return 'yes';
+  if (['maybe', 'm', 'unsure'].includes(v)) return 'maybe';
+  if (['no', 'n', 'false', '0'].includes(v)) return 'no';
+  return '';
+}
+
+// Targets you set before looking at results, so the verdict can't be rationalized afterwards.
+export const DEFAULT_THRESHOLDS = {
+  minInterviews: 8,      // conversations before judging at all
+  painShare: 0.5,        // share of interviews that must name the same pain point
+  listShares: 2,         // owners willing to hand over an old-estimate list
+  pilotYes: 1,           // owners who said yes to a paid or performance-based pilot
+};
+
+export function sanitizeThresholds(t = {}) {
+  const out = { ...DEFAULT_THRESHOLDS };
+  for (const key of Object.keys(DEFAULT_THRESHOLDS)) {
+    const n = Number(t[key]);
+    if (Number.isFinite(n) && n >= 0) out[key] = key === 'painShare' ? Math.min(1, n) : Math.round(n);
+  }
+  return out;
+}
+
+/**
+ * Scores the evidence against the thresholds and returns a verdict:
+ * - "not_enough": fewer interviews than the minimum; keep interviewing
+ * - "continue":   the pain is shared and owners commit (lists and pilots)
+ * - "pivot":      the pain is real but owners won't commit, or the top pain is a different problem
+ * - "stop":       enough interviews, no shared pain, and nobody commits
+ */
+export function validationScorecard(prospects, thresholds = DEFAULT_THRESHOLDS) {
+  const t = sanitizeThresholds(thresholds);
+  const ins = interviewInsights(prospects);
+  const talked = prospects.filter((p) => ['replied', 'interview_scheduled', 'interviewed', 'not_interested'].includes(p.status));
+  const count = (field, value) => prospects.filter((p) => p[field] === value).length;
+  const top = ins.themes[0] ?? null;
+  const metrics = {
+    interviews: ins.total,
+    conversations: talked.length,
+    topPain: top ? top.painPoint : '',
+    topPainShare: top ? top.share : 0,
+    listYes: count('sharesList', 'yes'),
+    listMaybe: count('sharesList', 'maybe'),
+    listNo: count('sharesList', 'no'),
+    pilotYes: count('pilotInterest', 'yes'),
+    pilotMaybe: count('pilotInterest', 'maybe'),
+    pilotNo: count('pilotInterest', 'no'),
+    notesMissing: ins.missingNotes.length,
+  };
+  const checks = [
+    { id: 'interviews', label: `At least ${t.minInterviews} interviews`, met: metrics.interviews >= t.minInterviews, value: `${metrics.interviews}` },
+    { id: 'pain', label: `One pain point named in ${Math.round(t.painShare * 100)}%+ of interviews`, met: metrics.interviews > 0 && metrics.topPainShare >= t.painShare, value: top ? `${Math.round(metrics.topPainShare * 100)}% “${metrics.topPain}”` : 'none yet' },
+    { id: 'lists', label: `${t.listShares}+ owners will share an estimate list`, met: metrics.listYes >= t.listShares, value: `${metrics.listYes} yes, ${metrics.listMaybe} maybe` },
+    { id: 'pilot', label: `${t.pilotYes}+ owners say yes to a pilot`, met: metrics.pilotYes >= t.pilotYes, value: `${metrics.pilotYes} yes, ${metrics.pilotMaybe} maybe` },
+  ];
+  const [enough, pain, lists, pilot] = checks.map((c) => c.met);
+  let verdict;
+  if (!enough) verdict = 'not_enough';
+  else if (pain && lists && pilot) verdict = 'continue';
+  else if (!pain && metrics.listYes === 0 && metrics.pilotYes === 0) verdict = 'stop';
+  else verdict = 'pivot';
+  return { thresholds: t, metrics, checks, verdict, themes: ins.themes };
+}
+
+export const VERDICTS = {
+  not_enough: { label: 'Keep interviewing', text: 'Not enough interviews yet to judge. Keep going before drawing conclusions.' },
+  continue: { label: 'Continue', text: 'Owners share the pain and commit with lists and pilots. Run the concierge pilot.' },
+  pivot: { label: 'Pivot', text: 'Some signal, but not the full pattern. Follow the pain owners actually describe, or test a different offer.' },
+  stop: { label: 'Stop', text: 'Enough interviews with no shared pain and no commitments. Stop or change the problem.' },
+};
+
+/** Plain-text/Markdown report you can paste into a class write-up or share with a mentor. */
+export function scorecardMarkdown(card, today = todayIso()) {
+  const v = VERDICTS[card.verdict];
+  const lines = [
+    `# Customer discovery scorecard (${today})`,
+    '',
+    `**Verdict: ${v.label}.** ${v.text}`,
+    '',
+    '## Targets set in advance',
+    '',
+    ...card.checks.map((c) => `- [${c.met ? 'x' : ' '}] ${c.label}: ${c.value}`),
+    '',
+    '## Evidence',
+    '',
+    `- Interviews done: ${card.metrics.interviews} (conversations of any kind: ${card.metrics.conversations})`,
+    `- Would share an old-estimate list: ${card.metrics.listYes} yes, ${card.metrics.listMaybe} maybe, ${card.metrics.listNo} no`,
+    `- Pilot interest: ${card.metrics.pilotYes} yes, ${card.metrics.pilotMaybe} maybe, ${card.metrics.pilotNo} no`,
+  ];
+  if (card.metrics.notesMissing) lines.push(`- ${card.metrics.notesMissing} interview(s) have no notes recorded`);
+  lines.push('', '## Pain points from interviews', '');
+  if (!card.themes.length) lines.push('_None recorded yet._');
+  for (const th of card.themes) {
+    lines.push(`- **${th.painPoint}**: ${th.count} of ${card.metrics.interviews} (${Math.round(th.share * 100)}%)`);
+    for (const e of th.evidence.filter((x) => x.note)) lines.push(`  - ${e.company} (${e.trade}): ${e.note.replace(/\s+/g, ' ').trim()}`);
+  }
+  lines.push('');
+  return lines.join('\n');
 }

@@ -4,6 +4,13 @@ A small, local-first web app for running customer discovery with home-service bu
 
 **Version 1 stores everything in your browser (localStorage).** Nothing is sent to a server, and the app never sends email. You send outreach yourself from your own mail client and record the result here.
 
+## What's new in 0.3
+
+- **Validation scorecard:** a continue / pivot / stop / keep-interviewing verdict, judged against targets you set *before* looking at the results. The default targets are 8 interviews, one pain point named in 50%+ of them, 2 owners willing to share an old-estimate list, and 1 pilot "yes."
+- **Two new answers on each prospect:** "Would share an old-estimate list?" and "Interested in a pilot?" (yes / maybe / no / not asked).
+- **Report export:** copy or download the scorecard as Markdown, including the evidence quotes, for a class write-up or mentor review.
+- Targets are saved under their own storage key (`cdd.settings.v1`), so changing them never touches prospect data. 0.1 and 0.2 data and CSVs still load, and the new CSV columns are appended at the end.
+
 ## What's new in 0.2
 
 - **Today's actions:** follow-ups due and upcoming interviews in one list, with one-click **Intro sent**, **Follow-up sent**, **Snooze 2 days**, and **Close (no reply)**. Every quick change has **Undo**.

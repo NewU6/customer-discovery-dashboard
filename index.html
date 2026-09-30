@@ -60,6 +60,28 @@
       </div>
     </section>
 
+    <section class="panel" id="scorecard-panel">
+      <div class="panel-head">
+        <h2>Validation scorecard</h2>
+        <div class="actions">
+          <button id="btn-copy-report" class="small">Copy report</button>
+          <button id="btn-download-report" class="small">Download report (.md)</button>
+        </div>
+      </div>
+      <div id="verdict" class="verdict"></div>
+      <ul id="checks" class="checks"></ul>
+      <details class="targets">
+        <summary>Edit targets <span class="muted small-text">(set these before you look at results)</span></summary>
+        <form id="targets-form" class="targets-grid">
+          <label>Minimum interviews<input name="minInterviews" type="number" min="0" step="1"></label>
+          <label>Top pain share (%)<input name="painSharePct" type="number" min="0" max="100" step="5"></label>
+          <label>Owners sharing a list<input name="listShares" type="number" min="0" step="1"></label>
+          <label>Pilot yeses<input name="pilotYes" type="number" min="0" step="1"></label>
+          <button type="button" id="btn-reset-targets" class="small">Reset to defaults</button>
+        </form>
+      </details>
+    </section>
+
     <section class="panel" id="evidence-panel" hidden>
       <div class="panel-head">
         <h2>What they said: <span id="evidence-title"></span></h2>
@@ -124,6 +146,8 @@
           <button type="button" id="btn-suggest" class="link">+5 business days from last contact</button>
         </label>
         <label>Interview date<input name="interviewDate" type="date"></label>
+        <label>Would share an old-estimate list?<select name="sharesList"></select></label>
+        <label>Interested in a pilot?<select name="pilotInterest"></select></label>
       </div>
       <fieldset>
         <legend>Pain points heard</legend>

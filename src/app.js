@@ -3,15 +3,17 @@ import {
   filterProspects, findByEmail, findDuplicateEmails, findSimilarCompanies, hasUpcomingInterview, importCsv,
   interviewInsights, isDue, isValidEmail, nextStep, painPointSummary, parsePainPoints, quickAction,
   sanitizeProspect, similarCompanyIds, sortProspects, summarize, toCsv, todayIso, FOLLOW_UP_DAYS,
+  DEFAULT_THRESHOLDS, SIGNALS, VERDICTS, sanitizeThresholds, scorecardMarkdown, validationScorecard,
 } from './logic.js';
 import { buildSampleData } from './sample-data.js';
-import { clearProspects, loadProspects, saveProspects } from './storage.js';
+import { clearProspects, loadProspects, loadSettings, saveProspects, saveSettings } from './storage.js';
 
 const $ = (sel) => document.querySelector(sel);
 const statusLabel = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
 
 let prospects = loadProspects() ?? buildSampleData();
 let editingId = null;
+let thresholds = sanitizeThresholds(loadSettings().thresholds);
 let formStartStatus = null;
 const view = { sortKey: '', sortDir: 'asc' };
 
@@ -217,14 +219,65 @@ function render() {
   renderToday(today);
   renderFunnel(s);
   renderInsights();
+  renderScorecard();
   renderTable();
   $('#sample-banner').hidden = !prospects.some((p) => p.isSample);
 }
 
+// ---------- validation scorecard ----------
+
+function renderScorecard() {
+  const card = validationScorecard(prospects, thresholds);
+  const v = VERDICTS[card.verdict];
+  $('#verdict').className = `verdict v-${card.verdict}`;
+  $('#verdict').replaceChildren(el('strong', {}, v.label), el('span', {}, v.text));
+  $('#checks').replaceChildren(...card.checks.map((c) => el('li', { class: c.met ? 'met' : 'unmet' },
+    el('span', { class: 'check-mark', 'aria-hidden': 'true' }, c.met ? '✓' : '○'),
+    el('span', {}, c.label),
+    el('span', { class: 'muted' }, c.value))));
+  const f = $('#targets-form');
+  if (!f.contains(document.activeElement)) {
+    f.elements.minInterviews.value = thresholds.minInterviews;
+    f.elements.painSharePct.value = Math.round(thresholds.painShare * 100);
+    f.elements.listShares.value = thresholds.listShares;
+    f.elements.pilotYes.value = thresholds.pilotYes;
+  }
+}
+
+function saveTargets(next) {
+  thresholds = sanitizeThresholds(next);
+  saveSettings({ ...loadSettings(), thresholds });
+  renderScorecard();
+}
+
+$('#targets-form').addEventListener('input', () => {
+  const f = $('#targets-form');
+  saveTargets({
+    minInterviews: f.elements.minInterviews.value,
+    painShare: Number(f.elements.painSharePct.value) / 100,
+    listShares: f.elements.listShares.value,
+    pilotYes: f.elements.pilotYes.value,
+  });
+});
+$('#btn-reset-targets').addEventListener('click', () => { saveTargets(DEFAULT_THRESHOLDS); document.activeElement?.blur(); renderScorecard(); });
+
+function reportText() {
+  return scorecardMarkdown(validationScorecard(prospects, thresholds), todayIso());
+}
+$('#btn-download-report').addEventListener('click', () => {
+  const blob = new Blob([reportText()], { type: 'text/markdown;charset=utf-8' });
+  const a = el('a', { href: URL.createObjectURL(blob), download: `discovery-scorecard-${todayIso()}.md` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$('#btn-copy-report').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(reportText()); toast('Report copied.'); } catch { toast('Copy failed. Use Download instead.'); }
+});
+
 // ---------- form ----------
 
 const form = $('#form');
-const FIELDS = ['company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewDate', 'interviewNotes'];
+const FIELDS = ['company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewDate', 'sharesList', 'pilotInterest', 'interviewNotes'];
 
 function openForm(id = null) {
   editingId = id;
@@ -390,5 +443,7 @@ fillSelect($('#f-status'), STATUSES, 'Any status');
 fillSelect($('#f-trade'), TRADES, 'Any trade');
 fillSelect(form.elements.status, STATUSES);
 fillSelect(form.elements.trade, TRADES);
+fillSelect(form.elements.sharesList, SIGNALS);
+fillSelect(form.elements.pilotInterest, SIGNALS);
 persist();
 render();

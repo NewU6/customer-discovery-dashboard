@@ -31,3 +31,25 @@ export function clearProspects(storage = globalThis.localStorage) {
     /* ignore */
   }
 }
+
+// Scorecard targets are stored separately so prospect data is never rewritten by a settings change.
+export const SETTINGS_KEY = 'cdd.settings.v1';
+
+export function loadSettings(storage = globalThis.localStorage) {
+  try {
+    const raw = storage?.getItem(SETTINGS_KEY);
+    const data = raw ? JSON.parse(raw) : null;
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveSettings(settings, storage = globalThis.localStorage) {
+  try {
+    storage?.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    return true;
+  } catch {
+    return false;
+  }
+}
