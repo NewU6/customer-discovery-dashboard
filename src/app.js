@@ -1,7 +1,8 @@
 import {
-  PAIN_POINTS, STATUSES, TRADES, addBusinessDays, emptyProspect, filterProspects, findByEmail,
-  findDuplicateEmails, followUpState, importCsv, isValidEmail, normalizeEmail, painPointSummary,
-  parsePainPoints, sanitizeProspect, summarize, toCsv, todayIso,
+  PAIN_POINTS, QUICK_ACTIONS, STATUSES, TRADES, addBusinessDays, applyStatus, emptyProspect,
+  filterProspects, findByEmail, findDuplicateEmails, findSimilarCompanies, hasUpcomingInterview, importCsv,
+  interviewInsights, isDue, isValidEmail, nextStep, painPointSummary, parsePainPoints, quickAction,
+  sanitizeProspect, similarCompanyIds, sortProspects, summarize, toCsv, todayIso, FOLLOW_UP_DAYS,
 } from './logic.js';
 import { buildSampleData } from './sample-data.js';
 import { clearProspects, loadProspects, saveProspects } from './storage.js';
@@ -11,6 +12,8 @@ const statusLabel = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
 
 let prospects = loadProspects() ?? buildSampleData();
 let editingId = null;
+let formStartStatus = null;
+const view = { sortKey: '', sortDir: 'asc' };
 
 function persist() {
   if (!saveProspects(prospects)) toast('Could not save to this browser (storage full or blocked).');
@@ -23,17 +26,17 @@ function el(tag, attrs = {}, ...children) {
     else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
     else if (v !== false && v !== null && v !== undefined) node.setAttribute(k, v === true ? '' : v);
   }
-  for (const c of children.flat()) if (c !== null && c !== undefined) node.append(c instanceof Node ? c : String(c));
+  for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) node.append(c instanceof Node ? c : String(c));
   return node;
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, undo = null) {
   const t = $('#toast');
-  t.textContent = msg;
+  t.replaceChildren(el('span', {}, msg), ...(undo ? [el('button', { class: 'small undo', onclick: () => { undo(); t.hidden = true; } }, 'Undo')] : []));
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+  toastTimer = setTimeout(() => { t.hidden = true; }, undo ? 7000 : 4000);
 }
 
 function fillSelect(select, options, anyLabel) {
@@ -41,6 +44,14 @@ function fillSelect(select, options, anyLabel) {
     ...(anyLabel ? [el('option', { value: '' }, anyLabel)] : []),
     ...options.map((o) => el('option', { value: o.id ?? o }, o.label ?? o)),
   );
+}
+
+function updateProspect(id, fn, message) {
+  const before = prospects;
+  prospects = prospects.map((p) => (p.id === id ? sanitizeProspect(fn(p)) : p));
+  persist();
+  render();
+  if (message) toast(message, () => { prospects = before; persist(); render(); });
 }
 
 // ---------- rendering ----------
@@ -53,68 +64,159 @@ function renderStats(s) {
     ['Replied', s.replied],
     ['Reply rate', pct],
     ['Interviews done', s.interviews],
+    ['Interviews booked', s.upcomingInterviews],
     ['Follow-ups due', s.dueFollowUps, s.dueFollowUps ? 'warn' : ''],
-    ['Duplicate emails', s.duplicateEmails, s.duplicateEmails ? 'warn' : ''],
+    ['Possible duplicates', s.possibleDuplicates, s.possibleDuplicates ? 'warn' : ''],
   ];
   $('#stats').replaceChildren(...cards.map(([label, value, cls]) => el('div', { class: `stat ${cls || ''}` }, el('div', { class: 'stat-value' }, value), el('div', { class: 'stat-label' }, label))));
+}
+
+function renderToday(today) {
+  const items = sortProspects(prospects.filter((p) => isDue(p, today) || hasUpcomingInterview(p, today)), '', 'asc', today);
+  $('#today-count').textContent = items.length ? `(${items.length})` : '';
+  if (!items.length) {
+    $('#today').replaceChildren(el('li', { class: 'muted' }, 'Nothing due. New intros you log will come back here after 5 business days.'));
+    return;
+  }
+  $('#today').replaceChildren(...items.map((p) => {
+    const step = nextStep(p, today);
+    const overdue = p.followUpDate && p.followUpDate < today && step.due;
+    return el('li', { class: 'action-item', 'data-id': p.id },
+      el('div', { class: 'action-main' },
+        el('button', { class: 'link company-link', onclick: () => openForm(p.id) }, p.company),
+        el('span', { class: `pill st-${p.status}` }, statusLabel[p.status]),
+        el('span', { class: overdue ? 'fu fu-overdue' : step.due ? 'fu fu-today' : 'muted' }, step.text, overdue ? ` (was due ${p.followUpDate})` : ''),
+        p.email ? el('span', { class: 'muted email' }, p.email) : null),
+      el('div', { class: 'action-buttons' },
+        ...step.actions.map((a) => el('button', { class: `small ${a === 'snooze' ? '' : 'primary'}`, 'data-action': a, onclick: () => runQuick(p.id, a) }, QUICK_ACTIONS[a])),
+        el('button', { class: 'small', onclick: () => openForm(p.id) }, 'Open')));
+  }));
+}
+
+function runQuick(id, action) {
+  const p = prospects.find((x) => x.id === id);
+  if (!p) return;
+  updateProspect(id, (x) => quickAction(x, action, todayIso()), `${p.company}: ${QUICK_ACTIONS[action].toLowerCase()}.`);
 }
 
 function renderFunnel(s) {
   const max = Math.max(1, ...Object.values(s.byStatus));
   $('#funnel').replaceChildren(...STATUSES.map(({ id, label }) => {
     const n = s.byStatus[id];
-    return el('div', { class: 'bar-row' },
+    return el('button', { class: 'bar-row as-button', title: `Show ${label.toLowerCase()} prospects`, onclick: () => { $('#f-status').value = id; renderTable(); $('#prospects').scrollIntoView({ behavior: 'smooth' }); } },
       el('span', { class: 'bar-label' }, label),
       el('span', { class: 'bar-track' }, el('span', { class: `bar-fill st-${id}`, style: `width:${(n / max) * 100}%` })),
       el('span', { class: 'bar-num' }, n));
   }));
 }
 
-function renderPainPoints() {
-  const list = painPointSummary(prospects, { interviewedOnly: $('#pp-interviewed').checked });
-  if (!list.length) {
-    $('#painpoints').replaceChildren(el('p', { class: 'muted' }, 'No pain points recorded yet. Add them when editing a prospect.'));
-    return;
+function renderInsights() {
+  const interviewedOnly = $('#pp-interviewed').checked;
+  const ins = interviewInsights(prospects);
+  const selected = $('#f-pain').value;
+  let rows;
+  if (interviewedOnly) {
+    const missing = ins.missingNotes.length ? ` ${ins.missingNotes.length} interview${ins.missingNotes.length > 1 ? 's have' : ' has'} no notes yet.` : '';
+    $('#insight-headline').textContent = ins.total
+      ? `${ins.total} interview${ins.total > 1 ? 's' : ''} done.${ins.themes[0] ? ` Top theme: “${ins.themes[0].painPoint}” (${ins.themes[0].count} of ${ins.total}).` : ''}${missing}`
+      : 'No interviews marked as done yet. Showing nothing until you record one.';
+    rows = ins.themes.map((t) => ({ painPoint: t.painPoint, count: t.count, label: `${t.count} of ${ins.total}`, width: t.share }));
+  } else {
+    const all = painPointSummary(prospects);
+    $('#insight-headline').textContent = 'Counting pain points from every prospect, including replies that were not interviews.';
+    const max = all[0]?.count ?? 1;
+    rows = all.map((t) => ({ painPoint: t.painPoint, count: t.count, label: String(t.count), width: t.count / max }));
   }
-  const max = list[0].count;
-  $('#painpoints').replaceChildren(...list.slice(0, 8).map(({ painPoint, count }) => el('div', { class: 'bar-row' },
-    el('span', { class: 'bar-label' }, painPoint),
-    el('span', { class: 'bar-track' }, el('span', { class: 'bar-fill pp', style: `width:${(count / max) * 100}%` })),
-    el('span', { class: 'bar-num' }, count))));
+  if (!rows.length) {
+    $('#painpoints').replaceChildren(el('p', { class: 'muted' }, 'No pain points recorded yet. Tick them when editing a prospect.'));
+  } else {
+    $('#painpoints').replaceChildren(...rows.slice(0, 10).map((r) => el('button', {
+      class: `bar-row as-button ${selected === r.painPoint ? 'selected' : ''}`,
+      'aria-pressed': selected === r.painPoint ? 'true' : 'false',
+      onclick: () => selectPainPoint(selected === r.painPoint ? '' : r.painPoint),
+    },
+    el('span', { class: 'bar-label', title: r.painPoint }, r.painPoint),
+    el('span', { class: 'bar-track' }, el('span', { class: 'bar-fill pp', style: `width:${Math.max(4, r.width * 100)}%` })),
+    el('span', { class: 'bar-num wide' }, r.label))));
+  }
+  renderEvidence(selected);
+}
+
+function renderEvidence(painPoint) {
+  const panel = $('#evidence-panel');
+  if (!painPoint) { panel.hidden = true; return; }
+  const people = prospects.filter((p) => p.painPoints.some((x) => x.toLowerCase() === painPoint.toLowerCase()));
+  panel.hidden = false;
+  $('#evidence-title').textContent = `“${painPoint}” (${people.length})`;
+  $('#evidence').replaceChildren(...people.map((p) => el('li', {},
+    el('div', {}, el('button', { class: 'link company-link', onclick: () => openForm(p.id) }, p.company), ' ', el('span', { class: `pill st-${p.status}` }, statusLabel[p.status]), ' ', el('span', { class: 'muted' }, p.trade)),
+    p.interviewNotes ? el('blockquote', {}, p.interviewNotes) : el('p', { class: 'muted' }, 'No notes recorded.'))));
+}
+
+function selectPainPoint(pp) {
+  $('#f-pain').value = pp;
+  renderInsights();
+  renderTable();
+}
+
+function refreshPainFilterOptions() {
+  const select = $('#f-pain');
+  const current = select.value;
+  const names = painPointSummary(prospects).map((x) => x.painPoint);
+  for (const pp of PAIN_POINTS) if (!names.some((n) => n.toLowerCase() === pp.toLowerCase())) names.push(pp);
+  fillSelect(select, names, 'Any pain point');
+  select.value = names.includes(current) ? current : '';
 }
 
 function currentFilters() {
-  return { search: $('#f-search').value, status: $('#f-status').value, trade: $('#f-trade').value, followUp: $('#f-followup').value };
+  return { search: $('#f-search').value, status: $('#f-status').value, trade: $('#f-trade').value, followUp: $('#f-followup').value, painPoint: $('#f-pain').value };
 }
 
 function renderTable() {
   const today = todayIso();
-  const dupes = findDuplicateEmails(prospects);
-  const dupeIds = new Set([...dupes.values()].flat());
+  const dupeEmailIds = new Set([...findDuplicateEmails(prospects).values()].flat());
+  const similarIds = similarCompanyIds(prospects);
   let list = filterProspects(prospects, currentFilters(), today);
-  if ($('#f-dupes').checked) list = list.filter((p) => dupeIds.has(p.id));
-  list = [...list].sort((a, b) => (a.followUpDate || '9999') .localeCompare(b.followUpDate || '9999') || a.company.localeCompare(b.company));
+  if ($('#f-dupes').checked) list = list.filter((p) => dupeEmailIds.has(p.id) || similarIds.has(p.id));
+  list = sortProspects(list, view.sortKey, view.sortDir, today);
+  for (const b of document.querySelectorAll('button.sort')) {
+    const active = b.dataset.sort === view.sortKey;
+    b.dataset.dir = active ? view.sortDir : '';
+    b.closest('th').setAttribute('aria-sort', active ? (view.sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
+  }
   $('#count').textContent = `(${list.length} of ${prospects.length})`;
   $('#empty').hidden = list.length > 0;
   $('#rows').replaceChildren(...list.map((p) => {
-    const fu = followUpState(p, today);
-    return el('tr', { 'data-id': p.id },
-      el('td', { 'data-label': 'Company' }, p.company, p.isSample ? el('span', { class: 'tag sample' }, 'sample') : null),
-      el('td', { 'data-label': 'Email', class: 'email' }, p.email || el('span', { class: 'muted' }, '—'), dupeIds.has(p.id) ? el('span', { class: 'tag dupe', title: 'Another prospect uses this email' }, 'duplicate') : null),
+    const step = nextStep(p, today);
+    const overdue = step.due && p.followUpDate < today;
+    return el('tr', { 'data-id': p.id, class: step.due ? 'row-due' : '' },
+      el('td', { 'data-label': 'Company' }, p.company,
+        p.isSample ? el('span', { class: 'tag sample' }, 'sample') : null,
+        similarIds.has(p.id) ? el('span', { class: 'tag dupe', title: 'Another prospect has a very similar company name' }, 'similar name') : null),
+      el('td', { 'data-label': 'Email', class: 'email' }, p.email || el('span', { class: 'muted' }, '—'), dupeEmailIds.has(p.id) ? el('span', { class: 'tag dupe', title: 'Another prospect uses this email' }, 'duplicate') : null),
       el('td', { 'data-label': 'Trade' }, p.trade),
-      el('td', { 'data-label': 'City' }, p.city),
+      el('td', { 'data-label': 'City' }, p.city || el('span', { class: 'muted' }, '—')),
       el('td', { 'data-label': 'Status' }, el('span', { class: `pill st-${p.status}` }, statusLabel[p.status])),
-      el('td', { 'data-label': 'Follow-up' }, p.followUpDate ? el('span', { class: `fu fu-${fu}` }, p.followUpDate, fu === 'overdue' ? ' (overdue)' : fu === 'today' ? ' (today)' : '') : el('span', { class: 'muted' }, '—')),
+      el('td', { 'data-label': 'Last contact', class: 'nowrap' }, p.lastContactDate || el('span', { class: 'muted' }, '—')),
+      el('td', { 'data-label': 'Next step' }, step.text ? el('span', { class: overdue ? 'fu fu-overdue' : step.due ? 'fu fu-today' : '' }, step.text, overdue ? ' (overdue)' : '') : el('span', { class: 'muted' }, '—')),
       el('td', { 'data-label': 'Pain points' }, p.painPoints.length ? p.painPoints.join(', ') : el('span', { class: 'muted' }, '—')),
-      el('td', {}, el('button', { class: 'small', onclick: () => openForm(p.id) }, 'Edit')));
+      el('td', { class: 'row-actions' },
+        ...step.actions.filter((a) => a !== 'snooze').map((a) => el('button', { class: 'small primary', 'data-action': a, onclick: () => runQuick(p.id, a) }, QUICK_ACTIONS[a])),
+        el('button', { class: 'small', onclick: () => openForm(p.id) }, 'Edit')));
   }));
 }
 
 function render() {
-  const s = summarize(prospects);
+  const today = todayIso();
+  const s = summarize(prospects, today);
+  const similar = similarCompanyIds(prospects);
+  const dupeEmail = new Set([...findDuplicateEmails(prospects).values()].flat());
+  s.possibleDuplicates = new Set([...similar, ...dupeEmail]).size;
+  refreshPainFilterOptions();
   renderStats(s);
+  renderToday(today);
   renderFunnel(s);
-  renderPainPoints();
+  renderInsights();
   renderTable();
   $('#sample-banner').hidden = !prospects.some((p) => p.isSample);
 }
@@ -122,21 +224,23 @@ function render() {
 // ---------- form ----------
 
 const form = $('#form');
+const FIELDS = ['company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewDate', 'interviewNotes'];
 
 function openForm(id = null) {
   editingId = id;
   const p = id ? prospects.find((x) => x.id === id) : emptyProspect();
+  formStartStatus = p.status;
   $('#dlg-title').textContent = id ? 'Edit prospect' : 'Add prospect';
   $('#btn-delete').hidden = !id;
   $('#form-error').hidden = true;
-  for (const name of ['company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewNotes']) {
-    form.elements[name].value = p[name] ?? '';
-  }
+  $('#status-msg').textContent = '';
+  for (const name of FIELDS) form.elements[name].value = p[name] ?? '';
   const known = new Set(PAIN_POINTS.map((x) => x.toLowerCase()));
   $('#pp-options').replaceChildren(...PAIN_POINTS.map((pp) => el('label', { class: 'chip' },
     el('input', { type: 'checkbox', value: pp, checked: p.painPoints.some((x) => x.toLowerCase() === pp.toLowerCase()) }), pp)));
   form.elements.customPain.value = p.painPoints.filter((x) => !known.has(x.toLowerCase())).join('; ');
   checkEmail();
+  checkCompany();
   $('#dlg').showModal();
   form.elements.company.focus();
 }
@@ -152,11 +256,35 @@ function checkEmail() {
   return true;
 }
 
+// A similar company name is only a warning: two locations of one business can be legitimate.
+function checkCompany() {
+  const msg = $('#company-msg');
+  const similar = findSimilarCompanies(prospects, form.elements.company.value, editingId);
+  msg.className = 'field-msg warn';
+  msg.textContent = similar.length ? `Possible duplicate of “${similar[0].company}”${similar[0].email ? ` (${similar[0].email})` : ''}.` : '';
+}
+
 form.elements.email.addEventListener('input', checkEmail);
+form.elements.company.addEventListener('input', checkCompany);
+
+// Changing status fills in the dates the outreach process expects, without overwriting dates typed for that status.
+form.elements.status.addEventListener('change', () => {
+  const current = {
+    status: formStartStatus,
+    lastContactDate: form.elements.lastContactDate.value,
+    followUpDate: form.elements.followUpDate.value,
+  };
+  const next = applyStatus(current, form.elements.status.value, todayIso());
+  const changed = [];
+  if (next.lastContactDate !== current.lastContactDate) { form.elements.lastContactDate.value = next.lastContactDate; changed.push('last contact'); }
+  if (next.followUpDate !== current.followUpDate) { form.elements.followUpDate.value = next.followUpDate; changed.push(next.followUpDate ? 'follow-up date' : 'follow-up cleared'); }
+  $('#status-msg').textContent = changed.length ? `Updated ${changed.join(' and ')}. You can change them.` : '';
+  if (form.elements.status.value === 'interview_scheduled' && !form.elements.interviewDate.value) form.elements.interviewDate.focus();
+});
 
 $('#btn-suggest').addEventListener('click', () => {
   const base = form.elements.lastContactDate.value || todayIso();
-  form.elements.followUpDate.value = addBusinessDays(base, 5);
+  form.elements.followUpDate.value = addBusinessDays(base, FOLLOW_UP_DAYS);
 });
 
 form.addEventListener('submit', (e) => {
@@ -167,21 +295,13 @@ form.addEventListener('submit', (e) => {
   if (!checkEmail()) { err.textContent = 'Fix the email before saving. Duplicate emails are not allowed.'; err.hidden = false; return; }
   const checked = [...$('#pp-options').querySelectorAll('input:checked')].map((i) => i.value);
   const existing = editingId ? prospects.find((x) => x.id === editingId) : null;
+  const values = Object.fromEntries(FIELDS.map((f) => [f, form.elements[f].value]));
   const data = sanitizeProspect({
     ...(existing ?? {}),
+    ...values,
     id: editingId ?? '',
     company,
-    contactName: form.elements.contactName.value,
-    email: form.elements.email.value,
-    phone: form.elements.phone.value,
-    trade: form.elements.trade.value,
-    city: form.elements.city.value,
-    source: form.elements.source.value,
-    status: form.elements.status.value,
-    lastContactDate: form.elements.lastContactDate.value,
-    followUpDate: form.elements.followUpDate.value,
     painPoints: [...checked, ...parsePainPoints(form.elements.customPain.value)],
-    interviewNotes: form.elements.interviewNotes.value,
     isSample: existing?.isSample ?? false,
   });
   if (editingId) prospects = prospects.map((x) => (x.id === editingId ? data : x));
@@ -195,12 +315,13 @@ form.addEventListener('submit', (e) => {
 $('#btn-cancel').addEventListener('click', () => $('#dlg').close());
 $('#btn-delete').addEventListener('click', () => {
   const p = prospects.find((x) => x.id === editingId);
-  if (!p || !confirm(`Delete “${p.company}”? This cannot be undone.`)) return;
+  if (!p || !confirm(`Delete “${p.company}”?`)) return;
+  const before = prospects;
   prospects = prospects.filter((x) => x.id !== editingId);
   persist();
   $('#dlg').close();
   render();
-  toast('Prospect deleted.');
+  toast('Prospect deleted.', () => { prospects = before; persist(); render(); });
 });
 
 // ---------- toolbar ----------
@@ -221,13 +342,14 @@ $('#file-import').addEventListener('change', async (e) => {
   e.target.value = '';
   if (!file) return;
   const { added, skipped, errors } = importCsv(await file.text(), prospects);
+  const before = prospects;
   prospects = [...added, ...prospects];
   persist();
   render();
   const parts = [`Imported ${added.length}.`];
   if (skipped.length) parts.push(`Skipped ${skipped.length} duplicate email${skipped.length > 1 ? 's' : ''}.`);
   if (errors.length) parts.push(`${errors.length} row${errors.length > 1 ? 's' : ''} had problems: ${errors.slice(0, 2).join(' ')}`);
-  toast(parts.join(' '));
+  toast(parts.join(' '), added.length ? () => { prospects = before; persist(); render(); } : null);
 });
 
 $('#btn-load-sample').addEventListener('click', () => {
@@ -237,9 +359,9 @@ $('#btn-load-sample').addEventListener('click', () => {
   $('.more').open = false;
 });
 $('#btn-remove-sample').addEventListener('click', () => {
-  const before = prospects.length;
+  const before = prospects;
   prospects = prospects.filter((p) => !p.isSample);
-  persist(); render(); toast(`Removed ${before - prospects.length} sample prospects.`);
+  persist(); render(); toast(`Removed ${before.length - prospects.length} sample prospects.`, () => { prospects = before; persist(); render(); });
   $('.more').open = false;
 });
 $('#btn-clear').addEventListener('click', () => {
@@ -250,7 +372,18 @@ $('#btn-clear').addEventListener('click', () => {
 });
 
 for (const id of ['#f-search', '#f-status', '#f-trade', '#f-followup', '#f-dupes']) $(id).addEventListener('input', renderTable);
-$('#pp-interviewed').addEventListener('change', renderPainPoints);
+$('#f-pain').addEventListener('input', () => { renderInsights(); renderTable(); });
+$('#pp-interviewed').addEventListener('change', renderInsights);
+$('#btn-clear-pp').addEventListener('click', () => selectPainPoint(''));
+for (const b of document.querySelectorAll('button.sort')) {
+  b.addEventListener('click', () => {
+    if (view.sortKey === b.dataset.sort) {
+      if (view.sortDir === 'asc') view.sortDir = 'desc';
+      else { view.sortKey = ''; view.sortDir = 'asc'; }
+    } else { view.sortKey = b.dataset.sort; view.sortDir = 'asc'; }
+    renderTable();
+  });
+}
 
 // ---------- init ----------
 fillSelect($('#f-status'), STATUSES, 'Any status');
@@ -259,6 +392,3 @@ fillSelect(form.elements.status, STATUSES);
 fillSelect(form.elements.trade, TRADES);
 persist();
 render();
-
-// Exposed for smoke tests only.
-window.__cdd = { get prospects() { return prospects; }, normalizeEmail };

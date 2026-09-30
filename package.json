@@ -1,6 +1,6 @@
 {
   "name": "customer-discovery-dashboard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local-first dashboard for home-service customer discovery: prospects, outreach status, follow-ups, interview notes and pain-point summaries.",
   "type": "module",

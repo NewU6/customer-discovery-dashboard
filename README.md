@@ -4,6 +4,25 @@ A small, local-first web app for running customer discovery with home-service bu
 
 **Version 1 stores everything in your browser (localStorage).** Nothing is sent to a server, and the app never sends email. You send outreach yourself from your own mail client and record the result here.
 
+## What's new in 0.2
+
+- **Today's actions:** follow-ups due and upcoming interviews in one list, with one-click **Intro sent**, **Follow-up sent**, **Snooze 2 days**, and **Close (no reply)**. Every quick change has **Undo**.
+- **Follow-up dates fill themselves in** when the status changes:
+  - *Contacted* sets last contact to today and the one follow-up 5 business days later.
+  - *Followed up* sets a 5-business-day "close if no reply" check.
+  - Replies, interviews, opt-outs, and closes clear the follow-up.
+  - You can still edit any date.
+- **Interview date** field, and an "Interviews booked" count.
+- **Interview insights:** pain points shown as "*n* of *total* interviews." Click a pain point to see who said it and their notes. It also flags interviews with no notes.
+- **Next step** and **Last contact** columns, plus sortable column headers.
+- **Possible duplicates** now include similar company names (ignoring punctuation and words like "LLC" or "Inc") as a warning, alongside the hard duplicate-email block.
+- Search now covers phone numbers. There's a pain-point filter, and funnel bars filter the table when clicked.
+- **Compatible with 0.1:**
+  - Same storage key (`cdd.prospects.v1`), and existing records load unchanged.
+  - A 0.1 "interview scheduled" record's date is copied into the new interview date.
+  - 0.1 CSV exports import fine.
+  - New CSV columns are appended at the end.
+
 ## Features
 
 - **Summary counts:** prospects, contacted, replied, reply rate, interviews done, follow-ups due, and duplicate emails.

@@ -32,10 +32,16 @@ export const PAIN_POINTS = [
   'Hard to track estimates',
 ];
 
+// New columns are appended at the end so v0.1 exports still import cleanly.
 export const CSV_FIELDS = [
   'id', 'company', 'contactName', 'email', 'phone', 'trade', 'city', 'source',
   'status', 'lastContactDate', 'followUpDate', 'painPoints', 'interviewNotes', 'isSample',
+  'interviewDate',
 ];
+
+// Business days between first contact and the single follow-up, and between the follow-up and closing.
+export const FOLLOW_UP_DAYS = 5;
+export const SNOOZE_DAYS = 2;
 
 export function normalizeEmail(email) {
   return String(email ?? '').trim().toLowerCase();
@@ -56,7 +62,7 @@ export function emptyProspect() {
   return {
     id: '', company: '', contactName: '', email: '', phone: '', trade: 'HVAC', city: '',
     source: '', status: 'queued', lastContactDate: '', followUpDate: '', painPoints: [],
-    interviewNotes: '', isSample: false,
+    interviewNotes: '', isSample: false, interviewDate: '',
   };
 }
 
@@ -67,7 +73,7 @@ export function sanitizeProspect(input) {
   for (const key of Object.keys(base)) {
     if (input && input[key] !== undefined && input[key] !== null) p[key] = input[key];
   }
-  for (const key of ['id', 'company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewNotes']) {
+  for (const key of ['id', 'company', 'contactName', 'email', 'phone', 'trade', 'city', 'source', 'status', 'lastContactDate', 'followUpDate', 'interviewNotes', 'interviewDate']) {
     p[key] = String(p[key]).trim();
   }
   p.email = normalizeEmail(p.email);
@@ -75,6 +81,10 @@ export function sanitizeProspect(input) {
   if (!TRADES.includes(p.trade)) p.trade = p.trade ? 'Other' : 'HVAC';
   p.lastContactDate = toIsoDate(p.lastContactDate);
   p.followUpDate = toIsoDate(p.followUpDate);
+  p.interviewDate = toIsoDate(p.interviewDate);
+  // v0.1 had no interview date, so scheduled interviews kept their date in followUpDate.
+  // Copy it (never move it) so those records show up as upcoming interviews.
+  if (p.status === 'interview_scheduled' && !p.interviewDate && p.followUpDate) p.interviewDate = p.followUpDate;
   p.painPoints = parsePainPoints(p.painPoints);
   p.isSample = p.isSample === true || String(p.isSample).toLowerCase() === 'true';
   if (!p.id) p.id = makeId();
@@ -159,13 +169,109 @@ export function followUpState(p, today = todayIso()) {
   return 'upcoming';
 }
 
+export function isDue(p, today = todayIso()) {
+  const f = followUpState(p, today);
+  return f === 'overdue' || f === 'today';
+}
+
+export function hasUpcomingInterview(p, today = todayIso()) {
+  return p.status === 'interview_scheduled' && !!p.interviewDate && p.interviewDate >= today;
+}
+
+/**
+ * Returns a copy of `p` moved to `status`, filling in dates the way the outreach process expects:
+ * - contacted: last contact defaults to today, the single follow-up is due FOLLOW_UP_DAYS business days later
+ * - followed_up: last contact is today, and the date becomes the "close if no reply" check
+ * - any stopped status: the follow-up date is cleared
+ * Dates the user already entered for the same status are kept.
+ */
+export function applyStatus(p, status, today = todayIso()) {
+  const next = { ...p, status };
+  if (status === p.status) return next;
+  if (status === 'contacted') {
+    next.lastContactDate = p.lastContactDate && p.status === 'queued' ? p.lastContactDate : today;
+    next.followUpDate = addBusinessDays(next.lastContactDate, FOLLOW_UP_DAYS);
+  } else if (status === 'followed_up') {
+    next.lastContactDate = today;
+    next.followUpDate = addBusinessDays(today, FOLLOW_UP_DAYS);
+  } else if (STOPPED.has(status)) {
+    next.followUpDate = '';
+  } else if (status === 'queued') {
+    next.followUpDate = '';
+  }
+  return next;
+}
+
+export const QUICK_ACTIONS = {
+  log_intro: 'Intro sent',
+  log_followup: 'Follow-up sent',
+  snooze: `Snooze ${SNOOZE_DAYS} days`,
+  close: 'Close (no reply)',
+};
+
+/** One-click actions from the action list. Returns the updated prospect. */
+export function quickAction(p, action, today = todayIso()) {
+  switch (action) {
+    case 'log_intro': return applyStatus(p, 'contacted', today);
+    case 'log_followup': return applyStatus(p, 'followed_up', today);
+    case 'snooze': return { ...p, followUpDate: addBusinessDays(today, SNOOZE_DAYS) };
+    case 'close': return applyStatus(p, 'closed', today);
+    default: throw new Error(`Unknown action: ${action}`);
+  }
+}
+
+/** What to do next for a prospect, plus which quick actions make sense. */
+export function nextStep(p, today = todayIso()) {
+  const due = isDue(p, today);
+  switch (p.status) {
+    case 'queued': return { text: 'Send intro', actions: ['log_intro'], due: false };
+    case 'contacted': return due
+      ? { text: 'Send the one follow-up', actions: ['log_followup', 'snooze'], due }
+      : { text: p.followUpDate ? `Follow up ${p.followUpDate}` : 'Set a follow-up date', actions: [], due };
+    case 'followed_up': return due
+      ? { text: 'No reply? Close it', actions: ['close', 'snooze'], due }
+      : { text: p.followUpDate ? `Close if no reply by ${p.followUpDate}` : 'Waiting for reply', actions: [], due };
+    case 'replied': return { text: 'Schedule interview', actions: [], due: false };
+    case 'interview_scheduled': return { text: p.interviewDate ? `Interview ${p.interviewDate}` : 'Add interview date', actions: [], due: false };
+    case 'interviewed': return { text: p.interviewNotes ? 'Done' : 'Add interview notes', actions: [], due: false };
+    default: return { text: '', actions: [], due: false };
+  }
+}
+
+const COMPANY_NOISE = /\b(the|inc|llc|l\.l\.c|co|corp|corporation|company|ltd|services?|sample)\b/g;
+export function normalizeCompany(name) {
+  return String(name ?? '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9 ]+/g, ' ').replace(COMPANY_NOISE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Other prospects whose company name matches after removing punctuation and words like "LLC" or "Inc". */
+export function findSimilarCompanies(prospects, company, exceptId = null) {
+  const key = normalizeCompany(company);
+  if (key.length < 3) return [];
+  return prospects.filter((p) => p.id !== exceptId && normalizeCompany(p.company) === key);
+}
+
+/** Set of prospect ids that share a normalized company name with another prospect. */
+export function similarCompanyIds(prospects) {
+  const groups = new Map();
+  for (const p of prospects) {
+    const key = normalizeCompany(p.company);
+    if (key.length < 3) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p.id);
+  }
+  return new Set([...groups.values()].filter((ids) => ids.length > 1).flat());
+}
+
 export function summarize(prospects, today = todayIso()) {
   const byStatus = Object.fromEntries(STATUS_IDS.map((s) => [s, 0]));
   let dueFollowUps = 0;
+  let upcomingInterviews = 0;
   for (const p of prospects) {
     byStatus[p.status] = (byStatus[p.status] ?? 0) + 1;
-    const f = followUpState(p, today);
-    if (f === 'overdue' || f === 'today') dueFollowUps += 1;
+    if (isDue(p, today)) dueFollowUps += 1;
+    if (hasUpcomingInterview(p, today)) upcomingInterviews += 1;
   }
   const contactedStatuses = STATUS_IDS.filter((s) => s !== 'queued');
   const contacted = contactedStatuses.reduce((n, s) => n + byStatus[s], 0) - byStatus.bounced;
@@ -176,6 +282,7 @@ export function summarize(prospects, today = todayIso()) {
     contacted,
     replied,
     interviews: byStatus.interviewed,
+    upcomingInterviews,
     dueFollowUps,
     duplicateEmails: findDuplicateEmails(prospects).size,
     replyRate: contacted > 0 ? replied / contacted : null,
@@ -198,18 +305,75 @@ export function painPointSummary(prospects, { interviewedOnly = false } = {}) {
     .sort((a, b) => b.count - a.count || a.painPoint.localeCompare(b.painPoint));
 }
 
-export function filterProspects(prospects, { search = '', status = '', trade = '', followUp = '' } = {}, today = todayIso()) {
+/**
+ * Interview insights: for each pain point, how many interviewed prospects mentioned it and what share
+ * of all interviews that is, plus the notes that back it up.
+ */
+export function interviewInsights(prospects) {
+  const interviewed = prospects.filter((p) => p.status === 'interviewed');
+  const total = interviewed.length;
+  const themes = painPointSummary(interviewed).map(({ painPoint, count }) => ({
+    painPoint,
+    count,
+    share: total ? count / total : 0,
+    evidence: interviewed
+      .filter((p) => p.painPoints.some((x) => x.toLowerCase() === painPoint.toLowerCase()))
+      .map((p) => ({ id: p.id, company: p.company, trade: p.trade, note: p.interviewNotes })),
+  }));
+  return {
+    total,
+    withNotes: interviewed.filter((p) => p.interviewNotes.trim()).length,
+    missingNotes: interviewed.filter((p) => !p.interviewNotes.trim()).map((p) => p.id),
+    themes,
+  };
+}
+
+export function hasPainPoint(p, painPoint) {
+  const key = painPoint.toLowerCase();
+  return p.painPoints.some((x) => x.toLowerCase() === key);
+}
+
+const SORTERS = {
+  company: (p) => p.company.toLowerCase(),
+  status: (p) => STATUS_IDS.indexOf(p.status),
+  lastContactDate: (p) => p.lastContactDate || '',
+  followUpDate: (p) => p.followUpDate || '9999-99-99',
+  trade: (p) => p.trade,
+  city: (p) => p.city.toLowerCase(),
+};
+export const SORT_KEYS = Object.keys(SORTERS);
+
+/** Default order: due first, then by follow-up date, then company. */
+export function sortProspects(list, key = '', dir = 'asc', today = todayIso()) {
+  const sign = dir === 'desc' ? -1 : 1;
+  const byCompany = (a, b) => a.company.localeCompare(b.company);
+  if (!SORTERS[key]) {
+    return [...list].sort((a, b) => (isDue(b, today) - isDue(a, today))
+      || SORTERS.followUpDate(a).localeCompare(SORTERS.followUpDate(b))
+      || byCompany(a, b));
+  }
+  const get = SORTERS[key];
+  return [...list].sort((a, b) => {
+    const x = get(a);
+    const y = get(b);
+    const c = typeof x === 'number' ? x - y : String(x).localeCompare(String(y));
+    return c * sign || byCompany(a, b);
+  });
+}
+
+export function filterProspects(prospects, { search = '', status = '', trade = '', followUp = '', painPoint = '' } = {}, today = todayIso()) {
   const q = search.trim().toLowerCase();
   return prospects.filter((p) => {
     if (status && p.status !== status) return false;
     if (trade && p.trade !== trade) return false;
+    if (painPoint && !hasPainPoint(p, painPoint)) return false;
     if (followUp) {
       const f = followUpState(p, today);
       if (followUp === 'due' && !(f === 'overdue' || f === 'today')) return false;
       if (followUp === 'upcoming' && f !== 'upcoming') return false;
     }
     if (!q) return true;
-    const hay = [p.company, p.contactName, p.email, p.city, p.source, p.interviewNotes, p.painPoints.join(' ')].join(' ').toLowerCase();
+    const hay = [p.company, p.contactName, p.email, p.phone, p.city, p.source, p.interviewNotes, p.painPoints.join(' ')].join(' ').toLowerCase();
     return hay.includes(q);
   });
 }
@@ -268,6 +432,7 @@ const HEADER_ALIASES = {
   painPoints: ['painpoints', 'pain points', 'pain_points'],
   interviewNotes: ['interviewnotes', 'interview notes', 'notes'],
   isSample: ['issample', 'is sample', 'sample'],
+  interviewDate: ['interviewdate', 'interview date', 'interview_date'],
   id: ['id'],
 };
 

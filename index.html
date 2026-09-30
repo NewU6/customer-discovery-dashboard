@@ -36,6 +36,14 @@
   <main>
     <section class="stats" id="stats" aria-label="Summary"></section>
 
+    <section class="panel" id="today-panel">
+      <div class="panel-head">
+        <h2>Today’s actions <span id="today-count" class="muted"></span></h2>
+        <span class="muted small-text">Follow-ups due and upcoming interviews. Log what you did in one click.</span>
+      </div>
+      <ul id="today" class="action-list"></ul>
+    </section>
+
     <section class="grid-2">
       <div class="panel">
         <h2>Outreach funnel</h2>
@@ -43,19 +51,29 @@
       </div>
       <div class="panel">
         <div class="panel-head">
-          <h2>Recurring pain points</h2>
-          <label class="inline"><input type="checkbox" id="pp-interviewed"> Interviewed only</label>
+          <h2>Interview insights</h2>
+          <label class="inline"><input type="checkbox" id="pp-interviewed" checked> Interviewed only</label>
         </div>
+        <p id="insight-headline" class="muted small-text"></p>
         <div id="painpoints"></div>
+        <p class="muted small-text">Click a pain point to see who said it and what they said.</p>
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="evidence-panel" hidden>
+      <div class="panel-head">
+        <h2>What they said: <span id="evidence-title"></span></h2>
+        <button id="btn-clear-pp" class="small">Clear</button>
+      </div>
+      <ul id="evidence" class="evidence"></ul>
+    </section>
+
+    <section class="panel" id="prospects">
       <div class="panel-head">
         <h2>Prospects <span id="count" class="muted"></span></h2>
       </div>
       <div class="filters">
-        <input id="f-search" type="search" placeholder="Search company, email, city, notes…" aria-label="Search">
+        <input id="f-search" type="search" placeholder="Search company, email, phone, city, notes…" aria-label="Search">
         <select id="f-status" aria-label="Status"></select>
         <select id="f-trade" aria-label="Trade"></select>
         <select id="f-followup" aria-label="Follow-up">
@@ -63,13 +81,22 @@
           <option value="due">Due today / overdue</option>
           <option value="upcoming">Upcoming</option>
         </select>
-        <label class="inline"><input type="checkbox" id="f-dupes"> Duplicates only</label>
+        <select id="f-pain" aria-label="Pain point"><option value="">Any pain point</option></select>
+        <label class="inline"><input type="checkbox" id="f-dupes"> Possible duplicates only</label>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Company</th><th>Email</th><th>Trade</th><th>City</th><th>Status</th><th>Follow-up</th><th>Pain points</th><th></th>
+              <th><button class="sort" data-sort="company">Company</button></th>
+              <th>Email</th>
+              <th><button class="sort" data-sort="trade">Trade</button></th>
+              <th><button class="sort" data-sort="city">City</button></th>
+              <th><button class="sort" data-sort="status">Status</button></th>
+              <th><button class="sort" data-sort="lastContactDate">Last contact</button></th>
+              <th><button class="sort" data-sort="followUpDate">Next step</button></th>
+              <th>Pain points</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
@@ -83,19 +110,20 @@
     <form id="form" method="dialog" novalidate>
       <h2 id="dlg-title">Add prospect</h2>
       <div class="form-grid">
-        <label>Company*<input name="company" required></label>
+        <label>Company*<input name="company" required><span class="field-msg" id="company-msg"></span></label>
         <label>Contact name<input name="contactName"></label>
         <label>Email<input name="email" type="email"><span class="field-msg" id="email-msg"></span></label>
         <label>Phone<input name="phone"></label>
         <label>Trade<select name="trade"></select></label>
         <label>City<input name="city"></label>
         <label>Source<input name="source" placeholder="e.g. company website"></label>
-        <label>Status<select name="status"></select></label>
+        <label>Status<select name="status"></select><span class="field-msg hint" id="status-msg"></span></label>
         <label>Last contact<input name="lastContactDate" type="date"></label>
         <label>Follow-up date
           <input name="followUpDate" type="date">
           <button type="button" id="btn-suggest" class="link">+5 business days from last contact</button>
         </label>
+        <label>Interview date<input name="interviewDate" type="date"></label>
       </div>
       <fieldset>
         <legend>Pain points heard</legend>
