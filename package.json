@@ -1,0 +1,15 @@
+{
+  "name": "customer-discovery-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first dashboard for home-service customer discovery: prospects, outreach status, follow-ups, interview notes and pain-point summaries.",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

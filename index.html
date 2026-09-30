@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Customer Discovery Dashboard</title>
+  <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Customer Discovery Dashboard</h1>
+      <p class="sub">Home-service prospects, outreach status, follow-ups and interview notes. Data is saved only in this browser.</p>
+    </div>
+    <div class="actions">
+      <button id="btn-add" class="primary">Add prospect</button>
+      <label class="button" for="file-import">Import CSV</label>
+      <input id="file-import" type="file" accept=".csv,text/csv" hidden>
+      <button id="btn-export">Export CSV</button>
+      <details class="more">
+        <summary class="button">More</summary>
+        <div class="menu">
+          <button id="btn-load-sample">Load sample data</button>
+          <button id="btn-remove-sample">Remove sample data</button>
+          <button id="btn-clear" class="danger">Delete all data</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <div id="sample-banner" class="banner" hidden>
+    Showing <strong>synthetic sample data</strong>. These companies and addresses are made up. Use “More → Remove sample data” before importing your own.
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <main>
+    <section class="stats" id="stats" aria-label="Summary"></section>
+
+    <section class="grid-2">
+      <div class="panel">
+        <h2>Outreach funnel</h2>
+        <div id="funnel"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Recurring pain points</h2>
+          <label class="inline"><input type="checkbox" id="pp-interviewed"> Interviewed only</label>
+        </div>
+        <div id="painpoints"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Prospects <span id="count" class="muted"></span></h2>
+      </div>
+      <div class="filters">
+        <input id="f-search" type="search" placeholder="Search company, email, city, notes…" aria-label="Search">
+        <select id="f-status" aria-label="Status"></select>
+        <select id="f-trade" aria-label="Trade"></select>
+        <select id="f-followup" aria-label="Follow-up">
+          <option value="">Any follow-up</option>
+          <option value="due">Due today / overdue</option>
+          <option value="upcoming">Upcoming</option>
+        </select>
+        <label class="inline"><input type="checkbox" id="f-dupes"> Duplicates only</label>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Company</th><th>Email</th><th>Trade</th><th>City</th><th>Status</th><th>Follow-up</th><th>Pain points</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p id="empty" class="empty" hidden>No prospects match these filters.</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="dlg">
+    <form id="form" method="dialog" novalidate>
+      <h2 id="dlg-title">Add prospect</h2>
+      <div class="form-grid">
+        <label>Company*<input name="company" required></label>
+        <label>Contact name<input name="contactName"></label>
+        <label>Email<input name="email" type="email"><span class="field-msg" id="email-msg"></span></label>
+        <label>Phone<input name="phone"></label>
+        <label>Trade<select name="trade"></select></label>
+        <label>City<input name="city"></label>
+        <label>Source<input name="source" placeholder="e.g. company website"></label>
+        <label>Status<select name="status"></select></label>
+        <label>Last contact<input name="lastContactDate" type="date"></label>
+        <label>Follow-up date
+          <input name="followUpDate" type="date">
+          <button type="button" id="btn-suggest" class="link">+5 business days from last contact</button>
+        </label>
+      </div>
+      <fieldset>
+        <legend>Pain points heard</legend>
+        <div id="pp-options" class="chips"></div>
+        <input name="customPain" placeholder="Other pain points, separated by ;">
+      </fieldset>
+      <label>Interview notes<textarea name="interviewNotes" rows="5" placeholder="What they said, in their words"></textarea></label>
+      <p class="form-error" id="form-error" hidden></p>
+      <div class="dlg-actions">
+        <button type="button" id="btn-delete" class="danger" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-cancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
